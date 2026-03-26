@@ -2,7 +2,7 @@ const { Client, GatewayIntentBits, Partials, ChannelType, PermissionsBitField, E
 const http = require('http');
 require('dotenv').config();
 
-// 1. RENDER HEALTH CHECK (Keep it online)
+// 1. RENDER HEALTH CHECK (Required for 24/7 on Render)
 http.createServer((req, res) => {
   res.writeHead(200);
   res.end('Modmail & Moderator Bot is Active');
@@ -23,15 +23,15 @@ const client = new Client({
 const commands = [
   new SlashCommandBuilder()
     .setName('kick')
-    .setDescription('Kick a member')
+    .setDescription('Kick a member from the server')
     .addUserOption(option => option.setName('target').setDescription('The member to kick').setRequired(true)),
   new SlashCommandBuilder()
     .setName('ban')
-    .setDescription('Ban a member')
+    .setDescription('Permanently ban a member')
     .addUserOption(option => option.setName('target').setDescription('The member to ban').setRequired(true)),
   new SlashCommandBuilder()
     .setName('mute')
-    .setDescription('Timeout a member (60 seconds)')
+    .setDescription('Timeout a member for 10 minutes')
     .addUserOption(option => option.setName('target').setDescription('The member to mute').setRequired(true)),
 ].map(command => command.toJSON());
 
@@ -40,7 +40,7 @@ const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
 
 client.once('ready', async () => {
   try {
-    console.log('Started refreshing slash commands...');
+    console.log('Refreshing slash commands...');
     await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
     console.log(`✅ ${client.user.tag} is online and Slash Commands are ready!`);
   } catch (error) {
@@ -48,42 +48,51 @@ client.once('ready', async () => {
   }
 });
 
-// 4. SLASH COMMAND INTERACTION HANDLER
+// 4. SLASH COMMAND HANDLER (With Fix for "Not Responding")
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
+  // Tells Discord to wait so it doesn't time out
+  await interaction.deferReply({ ephemeral: true });
+
   const { commandName, options, member } = interaction;
 
-  // Check for Moderator Permissions
+  // Permission Check
   if (!member.permissions.has(PermissionsBitField.Flags.ModerateMembers)) {
-    return interaction.reply({ content: "❌ You don't have permission to use staff commands!", ephemeral: true });
+    return interaction.editReply("❌ You don't have permission to use staff commands!");
   }
 
   const target = options.getMember('target');
+  if (!target) return interaction.editReply("❌ I couldn't find that member.");
 
-  if (commandName === 'kick') {
-    await target.kick();
-    await interaction.reply(`✈️ **${target.user.tag}** was kicked.`);
-  } 
-  
-  else if (commandName === 'ban') {
-    await target.ban();
-    await interaction.reply(`🔨 **${target.user.tag}** was banned.`);
-  } 
-
-  else if (commandName === 'mute') {
-    await target.timeout(60000); // 60 seconds
-    await interaction.reply(`🤫 **${target.user.tag}** has been muted for 1 minute.`);
+  try {
+    if (commandName === 'kick') {
+      await target.kick();
+      await interaction.editReply(`✈️ **${target.user.tag}** has been kicked.`);
+    } 
+    else if (commandName === 'ban') {
+      await target.ban();
+      await interaction.editReply(`🔨 **${target.user.tag}** has been banned.`);
+    } 
+    else if (commandName === 'mute') {
+      await target.timeout(600000); // 10 minutes
+      await interaction.editReply(`🤫 **${target.user.tag}** has been muted for 10 minutes.`);
+    }
+  } catch (err) {
+    console.error(err);
+    await interaction.editReply("⚠️ Failed to execute. Check if my Role is higher than the target!");
   }
 });
 
-// 5. YOUR MODMAIL LOGIC (Keeping your original code)
+// 5. MODMAIL LOGIC
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
 
   if (message.channel.type === ChannelType.DM) {
     const guild = client.guilds.cache.get(process.env.GUILD_ID);
     const categoryId = process.env.CATEGORY_ID;
+    if (!guild) return;
+
     let channel = guild.channels.cache.find(c => c.topic === message.author.id);
 
     if (!channel) {
@@ -105,13 +114,14 @@ client.on('messageCreate', async (message) => {
 
   else if (message.channel.parentId === process.env.CATEGORY_ID) {
     const userId = message.channel.topic;
-    const user = await client.users.fetch(userId);
+    const user = await client.users.fetch(userId).catch(() => null);
+    if (!user) return;
 
     if (message.content.toLowerCase() === '!close') {
       const closeEmbed = new EmbedBuilder()
         .setColor('#faa61a')
         .setDescription('🔒 **Modmail ticket closed.**');
-      await user.send({ embeds: [closeEmbed] });
+      await user.send({ embeds: [closeEmbed] }).catch(() => null);
       return message.channel.delete();
     }
 
@@ -120,7 +130,7 @@ client.on('messageCreate', async (message) => {
       .setAuthor({ name: `Staff: ${message.author.username}`, iconURL: message.author.displayAvatarURL() })
       .setDescription(message.content);
 
-    await user.send({ embeds: [replyEmbed] });
+    await user.send({ embeds: [replyEmbed] }).catch(() => null);
     await message.react('✅');
   }
 });
